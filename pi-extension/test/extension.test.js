@@ -8,7 +8,7 @@ import ponytailExtension from "../index.js";
 
 // These tests drive a parent session: a run inside a pi subagent (PI_CODE_SUBAGENT=1) must not switch them to
 // the child-mode path.
-for (const key of ["PI_CODE_SUBAGENT", "PONYTAIL_PARENT_MODE", "PONYTAIL_SUBAGENT_MATCHER"]) delete process.env[key];
+for (const key of ["PI_CODE_SUBAGENT", "NYCODE_SUBAGENT", "PONYTAIL_PARENT_MODE", "PONYTAIL_SUBAGENT_MATCHER"]) delete process.env[key];
 
 function createPiHarness() {
   const events = new Map();

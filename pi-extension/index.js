@@ -235,7 +235,7 @@ export default function ponytailExtension(pi) {
     configuredDefaultMode = getDefaultMode();
     hideStatus = getHideStatus();
     currentMode = resolveSessionMode(entries, configuredDefaultMode);
-    if (process.env.PI_CODE_SUBAGENT) {
+    if (process.env.PI_CODE_SUBAGENT || process.env.NYCODE_SUBAGENT) {
       // Child: inherit the parent's mode and honor the matcher; never persisted.
       currentMode = childMode({
         parentMode: process.env.PONYTAIL_PARENT_MODE,

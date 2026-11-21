@@ -31,7 +31,7 @@ test("a child session_start follows the parent mode and does not persist it", as
   const events = new Map();
   const appended = [];
   try {
-    process.env.PI_CODE_SUBAGENT = "1";
+    process.env.NYCODE_SUBAGENT = "1"; // nycode marks its child processes with NYCODE_SUBAGENT, pi-code with PI_CODE_SUBAGENT
     process.env.PONYTAIL_PARENT_MODE = "lite";
     process.env.PONYTAIL_SUBAGENT_MATCHER = "^other$";
     process.argv = argv("swarm-worker");
