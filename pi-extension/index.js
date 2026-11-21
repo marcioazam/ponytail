@@ -1,3 +1,5 @@
+// The alias commands forward their arguments to the skill (they used to be dropped, so
+// `/ponytail-review src/x.ts` lost its target).
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -34,6 +36,29 @@ export function resolveSessionMode(entries, fallbackMode = DEFAULT_MODE) {
   }
 
   return fallback;
+}
+
+// Subagent name from the `--system-prompt <dir>/prompt-<safeName>.md` argument a subagent extension passes to child
+// pi processes; null when absent or unparseable.
+export function subagentName(argv) {
+  const i = Array.isArray(argv) ? argv.indexOf("--system-prompt") : -1;
+  const m = i >= 0 ? /^prompt-(.+)\.md$/.exec(String(argv[i + 1] || "").split(/[\\/]/).pop()) : null;
+  return m ? m[1] : null;
+}
+
+// Mode of a child (subagent) pi process: the parent's mode, then PONYTAIL_SUBAGENT_MATCHER (unanchored,
+// case-insensitive, like Claude's SubagentStart hook) turns it off for agents that do not match.
+// Unparseable name or bad regex fail open (keep the mode).
+export function childMode({ parentMode, matcher, argv, fallback }) {
+  let mode = normalizePersistedMode(parentMode) || fallback;
+  if (mode === "off" || !matcher) return mode;
+  const name = subagentName(argv);
+  if (name === null) return mode;
+  try {
+    return new RegExp(matcher, "i").test(name) ? mode : "off";
+  } catch {
+    return mode;
+  }
 }
 
 export function parsePonytailCommand(text, defaultMode = DEFAULT_MODE, currentMode = null) {
@@ -95,12 +120,19 @@ export default function ponytailExtension(pi) {
     if (!normalized) return;
 
     currentMode = normalized;
+    process.env.PONYTAIL_PARENT_MODE = currentMode;
     pi.appendEntry("ponytail-mode", { mode: normalized });
     syncStatus(ctx);
     ctx?.ui?.notify?.(`Ponytail mode set to ${normalized}.`, "info");
   };
 
-  const sendAlias = (skillName, args, ctx) => {
+  // Resolvers waiting for the next agent_settled (aliases without UI, see sendAlias).
+  const settledWaiters = [];
+  pi.on("agent_settled", async () => {
+    for (const resolve of settledWaiters.splice(0)) resolve();
+  });
+
+  const sendAlias = async (skillName, args, ctx) => {
     const normalized = String(args || "").trim();
     const message = normalized ? `${skillName} ${normalized}` : skillName;
 
@@ -110,7 +142,23 @@ export default function ponytailExtension(pi) {
       return;
     }
 
+    if (ctx?.hasUI !== false) {
+      pi.sendUserMessage(message);
+      return;
+    }
+    // In `pi -p` and `--mode json` print mode disposes the runtime as soon as the command handler returns, before
+    // the run requested by sendUserMessage starts ("turn_end could not resolve...", stale ctx). Without UI the
+    // handler therefore waits for that run to settle; if it does not start within 60 s, it returns anyway.
+    const settled = new Promise((resolve) => settledWaiters.push(resolve));
     pi.sendUserMessage(message);
+    const started = (async () => {
+      for (let waited = 0; waited < 60_000; waited += 50) {
+        if (ctx?.isIdle?.() === false) return true;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return false;
+    })();
+    if (await Promise.race([settled.then(() => false), started])) await settled;
   };
 
   pi.registerCommand("ponytail", {
@@ -150,27 +198,27 @@ export default function ponytailExtension(pi) {
 
   pi.registerCommand("ponytail-review", {
     description: "Run /skill:ponytail-review",
-    handler: (_args, ctx) => sendAlias("/skill:ponytail-review", "", ctx),
+    handler: (args, ctx) => sendAlias("/skill:ponytail-review", args, ctx),
   });
 
   pi.registerCommand("ponytail-audit", {
     description: "Run /skill:ponytail-audit",
-    handler: (_args, ctx) => sendAlias("/skill:ponytail-audit", "", ctx),
+    handler: (args, ctx) => sendAlias("/skill:ponytail-audit", args, ctx),
   });
 
   pi.registerCommand("ponytail-gain", {
     description: "Run /skill:ponytail-gain",
-    handler: (_args, ctx) => sendAlias("/skill:ponytail-gain", "", ctx),
+    handler: (args, ctx) => sendAlias("/skill:ponytail-gain", args, ctx),
   });
 
   pi.registerCommand("ponytail-debt", {
     description: "Run /skill:ponytail-debt",
-    handler: (_args, ctx) => sendAlias("/skill:ponytail-debt", "", ctx),
+    handler: (args, ctx) => sendAlias("/skill:ponytail-debt", args, ctx),
   });
 
   pi.registerCommand("ponytail-help", {
     description: "Run /skill:ponytail-help",
-    handler: (_args, ctx) => sendAlias("/skill:ponytail-help", "", ctx),
+    handler: (args, ctx) => sendAlias("/skill:ponytail-help", args, ctx),
   });
 
   pi.on("input", async (event) => {
@@ -187,6 +235,17 @@ export default function ponytailExtension(pi) {
     configuredDefaultMode = getDefaultMode();
     hideStatus = getHideStatus();
     currentMode = resolveSessionMode(entries, configuredDefaultMode);
+    if (process.env.PI_CODE_SUBAGENT) {
+      // Child: inherit the parent's mode and honor the matcher; never persisted.
+      currentMode = childMode({
+        parentMode: process.env.PONYTAIL_PARENT_MODE,
+        matcher: process.env.PONYTAIL_SUBAGENT_MATCHER,
+        argv: process.argv,
+        fallback: currentMode,
+      });
+    }
+    // Children spawned later inherit the mode through process.env.
+    process.env.PONYTAIL_PARENT_MODE = currentMode;
     syncStatus(ctx);
     if (!getQuietStartup()) {
       ctx?.ui?.notify?.(`Ponytail loaded: ${currentMode}`, "info");

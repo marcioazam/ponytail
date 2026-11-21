@@ -6,6 +6,10 @@ import test from "node:test";
 
 import ponytailExtension from "../index.js";
 
+// These tests drive a parent session: a run inside a pi subagent (PI_CODE_SUBAGENT=1) must not switch them to
+// the child-mode path.
+for (const key of ["PI_CODE_SUBAGENT", "PONYTAIL_PARENT_MODE", "PONYTAIL_SUBAGENT_MATCHER"]) delete process.env[key];
+
 function createPiHarness() {
   const events = new Map();
   const commands = new Map();
@@ -260,3 +264,28 @@ test("PONYTAIL_HIDE_STATUS=0 does not hide the indicator", async () => withTempC
 
   assert.ok(statusWrites.length > 0, "0 must be treated as 'do not hide'");
 }));
+
+// The aliases forward their arguments to the skill.
+test("aliases forward their arguments to the skill", async () => {
+  const { commands, sentUserMessages } = createPiHarness();
+  await commands.get("ponytail-review").handler("src/x.ts", createCommandContext());
+  await commands.get("ponytail-audit").handler("  ", createCommandContext());
+  assert.deepEqual(sentUserMessages.map((m) => m.text), ["/skill:ponytail-review src/x.ts", "/skill:ponytail-audit"]);
+});
+
+// Without UI (pi -p / --mode json) the alias returns only after the run it requested settles.
+test("aliases without UI wait for the run they started to settle", async () => {
+  const { events, commands, sentUserMessages } = createPiHarness();
+  let idle = true;
+  const ctx = createCommandContext({ hasUI: false, isIdle: () => idle });
+  let returned = false;
+  const done = commands.get("ponytail-gain").handler("", ctx).then(() => { returned = true; });
+  assert.deepEqual(sentUserMessages.map((m) => m.text), ["/skill:ponytail-gain"]);
+  idle = false; // the run started
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(returned, false);
+  idle = true;
+  await events.get("agent_settled")();
+  await done;
+  assert.equal(returned, true);
+});
